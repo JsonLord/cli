@@ -1,3 +1,9 @@
+---
+title: gws
+sdk: docker
+app_port: 7860
+---
+
 <h1 align="center">gws</h1>
 
 **One CLI for all of Google Workspace — built for humans and AI agents.**<br>

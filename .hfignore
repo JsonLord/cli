@@ -1,0 +1,8 @@
+target/
+.git/
+.github/
+.vscode/
+.changeset/
+node_modules/
+tests/
+__pycache__/
