@@ -183,11 +183,76 @@ pub struct JsonSchemaProperty {
     pub additional_properties: Option<Box<JsonSchemaProperty>>,
 }
 
-/// Fetches and caches a Google Discovery Document.
+use crate::config::{RegistryConfig, SchemaType};
+
+/// Fetches and caches a Discovery Document or OpenAPI spec.
 pub async fn fetch_discovery_document(
     service: &str,
     version: &str,
 ) -> anyhow::Result<RestDescription> {
+    let registry = RegistryConfig::load();
+    if let Some(service_config) = registry.services.get(service) {
+        if !service_config.is_google {
+            // 1. Local schema file
+            if let Some(file_path) = &service_config.schema_file {
+                let content = std::fs::read_to_string(file_path)?;
+                if service_config.schema_type == SchemaType::Openapi {
+                    return crate::openapi::convert_openapi_to_rest_description(
+                        service,
+                        &content,
+                        service_config.base_url.as_deref(),
+                    );
+                } else {
+                    let doc: RestDescription = serde_json::from_str(&content)?;
+                    return Ok(doc);
+                }
+            }
+
+            // 2. Built-in default spec fallback for cowork service when remote endpoint unavailable
+            if service == "cowork" {
+                if let Ok(doc) = crate::openapi::convert_openapi_to_rest_description(
+                    service,
+                    crate::openapi::DEFAULT_COWORK_OPENAPI_SPEC,
+                    service_config.base_url.as_deref(),
+                ) {
+                    return Ok(doc);
+                }
+            }
+
+            // 3. Schema URL or Discovery check
+            let client = crate::client::build_client()?;
+            if let Some(schema_url) = &service_config.schema_url {
+                if let Ok(resp) = client.get(schema_url).send().await {
+                    if resp.status().is_success() {
+                        let content = resp.text().await?;
+                        if service_config.schema_type == SchemaType::Openapi {
+                            return crate::openapi::convert_openapi_to_rest_description(
+                                service,
+                                &content,
+                                service_config.base_url.as_deref(),
+                            );
+                        } else if let Ok(doc) = serde_json::from_str::<RestDescription>(&content) {
+                            return Ok(doc);
+                        }
+                    }
+                }
+            }
+
+            // 4. Well-known fallback check (/.well-known/cws.json)
+            if let Some(base_url) = &service_config.base_url {
+                let well_known_url = format!("{}/.well-known/cws.json", base_url.trim_end_matches('/'));
+                if let Ok(resp) = client.get(&well_known_url).send().await {
+                    if resp.status().is_success() {
+                        let content = resp.text().await?;
+                        if let Ok(doc) = serde_json::from_str::<RestDescription>(&content) {
+                            return Ok(doc);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Validate service and version to prevent path traversal in cache filenames
     // and injection in discovery URLs.
     let service =

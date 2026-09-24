@@ -1047,19 +1047,11 @@ pub(super) async fn send_raw_email(
     let params = json!({ "userId": "me" });
     let params_str = params.to_string();
 
-    let (token, auth_method) = match existing_token {
-        Some(t) => (Some(t.to_string()), executor::AuthMethod::OAuth),
-        None => {
-            let scopes: Vec<&str> = send_method.scopes.iter().map(|s| s.as_str()).collect();
-            match auth::get_token(&scopes).await {
-                Ok(t) => (Some(t), executor::AuthMethod::OAuth),
-                Err(e) if matches.get_flag("dry-run") => {
-                    eprintln!("Note: auth skipped for dry-run ({e})");
-                    (None, executor::AuthMethod::None)
-                }
-                Err(e) => return Err(GwsError::Auth(format!("Gmail auth failed: {e}"))),
-            }
-        }
+    let provider_auth = if let Some(t) = existing_token {
+        auth::ProviderAuth::Bearer(t.to_string())
+    } else {
+        let scopes: Vec<&str> = send_method.scopes.iter().map(|s| s.as_str()).collect();
+        auth::ProviderAuth::resolve(None, &scopes).await
     };
 
     let pagination = executor::PaginationConfig {
@@ -1073,8 +1065,8 @@ pub(super) async fn send_raw_email(
         send_method,
         Some(&params_str),
         metadata.as_deref(),
-        token.as_deref(),
-        auth_method,
+        provider_auth,
+        None,
         None,
         Some(executor::UploadSource::Bytes {
             data: raw_message.as_bytes(),
@@ -2606,12 +2598,9 @@ mod tests {
 
     #[test]
     fn test_parse_attachments_reads_real_file() {
-        use std::io::Write;
         let dir = tempfile::tempdir_in(".").unwrap();
         let file_path = dir.path().join("test.txt");
-        let mut f = std::fs::File::create(&file_path).unwrap();
-        f.write_all(b"hello world").unwrap();
-        drop(f);
+        std::fs::write(&file_path, b"hello world").unwrap();
 
         let path_str = file_path.to_str().unwrap().to_string();
         let matches = make_attach_matches(&["test", "-a", &path_str]);
@@ -2636,12 +2625,9 @@ mod tests {
 
     #[test]
     fn test_parse_attachments_unknown_extension_falls_back_to_octet_stream() {
-        use std::io::Write;
         let dir = tempfile::tempdir_in(".").unwrap();
         let file_path = dir.path().join("data.zzqqxx");
-        let mut f = std::fs::File::create(&file_path).unwrap();
-        f.write_all(b"unknown format").unwrap();
-        drop(f);
+        std::fs::write(&file_path, b"unknown format").unwrap();
 
         let path_str = file_path.to_str().unwrap().to_string();
         let matches = make_attach_matches(&["test", "-a", &path_str]);
@@ -2652,7 +2638,6 @@ mod tests {
 
     #[test]
     fn test_parse_attachments_size_limit_accumulates() {
-        use std::io::Write;
         let dir = tempfile::tempdir_in(".").unwrap();
 
         // Create two files whose combined size exceeds MAX_TOTAL_ATTACHMENT_BYTES

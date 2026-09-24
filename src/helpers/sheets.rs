@@ -106,11 +106,7 @@ TIPS:
                 let (params_str, body_str, scopes) = build_append_request(&config, doc)?;
 
                 let scope_strs: Vec<&str> = scopes.iter().map(|s| s.as_str()).collect();
-                let (token, auth_method) = match auth::get_token(&scope_strs).await {
-                    Ok(t) => (Some(t), executor::AuthMethod::OAuth),
-                    Err(_) if matches.get_flag("dry-run") => (None, executor::AuthMethod::None),
-                    Err(e) => return Err(GwsError::Auth(format!("Sheets auth failed: {e}"))),
-                };
+                let provider_auth = auth::ProviderAuth::resolve(None, &scope_strs).await;
 
                 let spreadsheets_res = doc.resources.get("spreadsheets").ok_or_else(|| {
                     GwsError::Discovery("Resource 'spreadsheets' not found".to_string())
@@ -133,8 +129,8 @@ TIPS:
                     append_method,
                     Some(&params_str),
                     Some(&body_str),
-                    token.as_deref(),
-                    auth_method,
+                    provider_auth,
+                    None,
                     None,
                     None,
                     matches.get_flag("dry-run"),
@@ -165,19 +161,15 @@ TIPS:
                 })?;
 
                 let scope_strs: Vec<&str> = scopes.iter().map(|s| s.as_str()).collect();
-                let (token, auth_method) = match auth::get_token(&scope_strs).await {
-                    Ok(t) => (Some(t), executor::AuthMethod::OAuth),
-                    Err(_) if matches.get_flag("dry-run") => (None, executor::AuthMethod::None),
-                    Err(e) => return Err(GwsError::Auth(format!("Sheets auth failed: {e}"))),
-                };
+                let provider_auth = auth::ProviderAuth::resolve(None, &scope_strs).await;
 
                 executor::execute_method(
                     doc,
                     get_method,
                     Some(&params_str),
                     None,
-                    token.as_deref(),
-                    auth_method,
+                    provider_auth,
+                    None,
                     None,
                     None,
                     matches.get_flag("dry-run"),

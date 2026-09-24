@@ -27,18 +27,11 @@ use futures_util::StreamExt;
 use serde_json::{json, Map, Value};
 use tokio::io::AsyncWriteExt;
 
+use crate::auth::ProviderAuth;
+use crate::config::ServiceConfig;
 use crate::discovery::{RestDescription, RestMethod};
 use crate::error::GwsError;
 use crate::output::sanitize_for_terminal;
-
-/// Tracks what authentication method was used for the request.
-#[derive(Debug, Clone, PartialEq)]
-pub enum AuthMethod {
-    /// OAuth2 bearer token from credentials file
-    OAuth,
-    /// No authentication was provided
-    None,
-}
 
 /// Source for media upload content.
 ///
@@ -162,8 +155,8 @@ async fn build_http_request(
     client: &reqwest::Client,
     method: &RestMethod,
     input: &ExecutionInput,
-    token: Option<&str>,
-    auth_method: &AuthMethod,
+    provider_auth: &ProviderAuth,
+    service_config: Option<&ServiceConfig>,
     page_token: Option<&str>,
     pages_fetched: u32,
     upload: &Option<UploadSource<'_>>,
@@ -181,15 +174,25 @@ async fn build_http_request(
         }
     };
 
-    if let Some(token) = token {
-        if *auth_method == AuthMethod::OAuth {
+    match provider_auth {
+        ProviderAuth::Bearer(token) => {
             request = request.bearer_auth(token);
         }
+        ProviderAuth::ApiKey { name, key } => {
+            request = request.header(name, key);
+        }
+        ProviderAuth::GoogleOAuth(Some(token)) => {
+            request = request.bearer_auth(token);
+        }
+        ProviderAuth::GoogleOAuth(None) | ProviderAuth::None => {}
     }
 
-    // Set quota project from ADC for billing/quota attribution
-    if let Some(quota_project) = crate::auth::get_quota_project() {
-        request = request.header("x-goog-user-project", quota_project);
+    let is_google = service_config.map(|c| c.is_google).unwrap_or(true);
+    if is_google {
+        // Set quota project from ADC for billing/quota attribution ONLY for Google services
+        if let Some(quota_project) = crate::auth::get_quota_project() {
+            request = request.header("x-goog-user-project", quota_project);
+        }
     }
 
     let mut all_query_params = input.query_params.clone();
@@ -400,8 +403,8 @@ pub async fn execute_method(
     method: &RestMethod,
     params_json: Option<&str>,
     body_json: Option<&str>,
-    token: Option<&str>,
-    auth_method: AuthMethod,
+    provider_auth: ProviderAuth,
+    service_config: Option<&ServiceConfig>,
     output_path: Option<&str>,
     upload: Option<UploadSource<'_>>,
     dry_run: bool,
@@ -442,8 +445,8 @@ pub async fn execute_method(
             &client,
             method,
             &input,
-            token,
-            &auth_method,
+            &provider_auth,
+            service_config,
             page_token.as_deref(),
             pages_fetched,
             &upload,
@@ -472,7 +475,7 @@ pub async fn execute_method(
                 latency_ms = latency_ms,
                 "API error"
             );
-            return handle_error_response(status, &error_body, &auth_method);
+            return handle_error_response(status, &error_body, &provider_auth);
         }
 
         tracing::debug!(
@@ -753,14 +756,14 @@ pub fn extract_enable_url(message: &str) -> Option<String> {
 fn handle_error_response<T>(
     status: reqwest::StatusCode,
     error_body: &str,
-    auth_method: &AuthMethod,
+    provider_auth: &ProviderAuth,
 ) -> Result<T, GwsError> {
     // If 401/403 and no auth was provided, give a helpful message
-    if (status.as_u16() == 401 || status.as_u16() == 403) && *auth_method == AuthMethod::None {
+    if (status.as_u16() == 401 || status.as_u16() == 403)
+        && matches!(provider_auth, ProviderAuth::None | ProviderAuth::GoogleOAuth(None))
+    {
         return Err(GwsError::Auth(
-            "Access denied. No credentials provided. Run `gws auth login` or set \
-             GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE to an OAuth credentials JSON file."
-                .to_string(),
+            "Access denied. No credentials provided.".to_string(),
         ));
     }
 
@@ -1203,10 +1206,13 @@ mod tests {
     }
 
     #[test]
-    fn test_auth_method_equality() {
-        assert_eq!(AuthMethod::OAuth, AuthMethod::OAuth);
-        assert_eq!(AuthMethod::None, AuthMethod::None);
-        assert_ne!(AuthMethod::OAuth, AuthMethod::None);
+    fn test_provider_auth_equality() {
+        assert_eq!(ProviderAuth::None, ProviderAuth::None);
+        assert_eq!(
+            ProviderAuth::Bearer("abc".into()),
+            ProviderAuth::Bearer("abc".into())
+        );
+        assert_ne!(ProviderAuth::None, ProviderAuth::Bearer("abc".into()));
     }
 
     #[test]
@@ -1946,7 +1952,7 @@ mod tests {
         let err = handle_error_response::<()>(
             reqwest::StatusCode::UNAUTHORIZED,
             "Unauthorized",
-            &AuthMethod::None,
+            &ProviderAuth::None,
         )
         .unwrap_err();
         match err {
@@ -1972,7 +1978,7 @@ mod tests {
         let err = handle_error_response::<()>(
             reqwest::StatusCode::UNAUTHORIZED,
             &json_err,
-            &AuthMethod::OAuth,
+            &ProviderAuth::GoogleOAuth(Some("test-token".to_string())),
         )
         .unwrap_err();
         match err {
@@ -2007,7 +2013,7 @@ mod tests {
         let err = handle_error_response::<()>(
             reqwest::StatusCode::BAD_REQUEST,
             &json_err,
-            &AuthMethod::OAuth,
+            &ProviderAuth::GoogleOAuth(Some("test-token".to_string())),
         )
         .unwrap_err();
         match err {
@@ -2087,8 +2093,8 @@ async fn test_execute_method_dry_run() {
         &method,
         Some(params_json),
         Some(body_json),
+        ProviderAuth::None,
         None,
-        AuthMethod::None,
         None,
         None,
         true, // dry_run
@@ -2130,8 +2136,8 @@ async fn test_execute_method_missing_path_param() {
         &method,
         None, // No params provided
         None,
+        ProviderAuth::None,
         None,
-        AuthMethod::None,
         None,
         None,
         true,
@@ -2155,7 +2161,7 @@ fn test_handle_error_response_non_json() {
     let err = handle_error_response::<()>(
         reqwest::StatusCode::INTERNAL_SERVER_ERROR,
         "Internal Server Error Text",
-        &AuthMethod::OAuth,
+        &ProviderAuth::GoogleOAuth(Some("test-token".to_string())),
     )
     .unwrap_err();
     match err {
@@ -2222,7 +2228,7 @@ fn test_handle_error_response_access_not_configured_with_url() {
     let err = handle_error_response::<()>(
         reqwest::StatusCode::FORBIDDEN,
         &json_err,
-        &AuthMethod::OAuth,
+        &ProviderAuth::GoogleOAuth(Some("test-token".to_string())),
     )
     .unwrap_err();
 
@@ -2259,7 +2265,7 @@ fn test_handle_error_response_access_not_configured_errors_array() {
     let err = handle_error_response::<()>(
         reqwest::StatusCode::FORBIDDEN,
         &json_err,
-        &AuthMethod::OAuth,
+        &ProviderAuth::GoogleOAuth(Some("test-token".to_string())),
     )
     .unwrap_err();
 
@@ -2306,8 +2312,8 @@ async fn test_post_without_body_sets_content_length_zero() {
         &client,
         &method,
         &input,
+        &ProviderAuth::None,
         None,
-        &AuthMethod::None,
         None,
         0,
         &None,
@@ -2346,8 +2352,8 @@ async fn test_post_with_body_does_not_add_content_length_zero() {
         &client,
         &method,
         &input,
+        &ProviderAuth::None,
         None,
-        &AuthMethod::None,
         None,
         0,
         &None,
@@ -2384,8 +2390,8 @@ async fn test_get_does_not_set_content_length_zero() {
         &client,
         &method,
         &input,
+        &ProviderAuth::None,
         None,
-        &AuthMethod::None,
         None,
         0,
         &None,
@@ -2397,5 +2403,55 @@ async fn test_get_does_not_set_content_length_zero() {
     assert!(
         built.headers().get("Content-Length").is_none(),
         "GET with no body should not have Content-Length header"
+    );
+}
+
+#[tokio::test]
+async fn test_google_headers_not_leaked_to_generic_providers() {
+    let client = reqwest::Client::new();
+    let method = RestMethod {
+        http_method: "GET".to_string(),
+        path: "health".to_string(),
+        ..Default::default()
+    };
+    let input = ExecutionInput {
+        full_url: "https://leon4gr45-openui-cowork.hf.space/health".to_string(),
+        body: None,
+        params: Map::new(),
+        query_params: Vec::new(),
+        is_upload: false,
+    };
+
+    let cowork_cfg = ServiceConfig {
+        is_google: false,
+        ..Default::default()
+    };
+
+    let request = build_http_request(
+        &client,
+        &method,
+        &input,
+        &ProviderAuth::Bearer("token123".to_string()),
+        Some(&cowork_cfg),
+        None,
+        0,
+        &None,
+    )
+    .await
+    .unwrap();
+
+    let built = request.build().unwrap();
+    assert!(
+        built.headers().get("x-goog-user-project").is_none(),
+        "x-goog-user-project must NOT be leaked to generic/non-Google providers"
+    );
+    assert_eq!(
+        built
+            .headers()
+            .get("Authorization")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "Bearer token123"
     );
 }

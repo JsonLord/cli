@@ -22,7 +22,61 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 
+use crate::config::ServiceConfig;
 use crate::credential_store;
+
+/// Provider-neutral auth method representation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderAuth {
+    None,
+    Bearer(String),
+    ApiKey { name: String, key: String },
+    GoogleOAuth(Option<String>),
+}
+
+impl ProviderAuth {
+    /// Resolves authentication strategy for a service config.
+    pub async fn resolve(service_config: Option<&ServiceConfig>, scopes: &[&str]) -> Self {
+        let config = match service_config {
+            Some(c) => c,
+            None => {
+                // Default fallback: Google OAuth
+                let token = get_token(scopes).await.ok();
+                return Self::GoogleOAuth(token);
+            }
+        };
+
+        if config.is_google {
+            let token = get_token(scopes).await.ok();
+            return Self::GoogleOAuth(token);
+        }
+
+        match config.auth {
+            crate::config::AuthType::None => Self::None,
+            crate::config::AuthType::Bearer => {
+                if let Some(token) = config.resolved_bearer_token() {
+                    Self::Bearer(token)
+                } else if let Ok(token) = std::env::var("COWORK_TOKEN") {
+                    Self::Bearer(token)
+                } else {
+                    Self::None
+                }
+            }
+            crate::config::AuthType::ApiKey => {
+                if let Some(key) = config.resolved_api_key() {
+                    let name = config.header_name.clone().unwrap_or_else(|| "X-API-Key".to_string());
+                    Self::ApiKey { name, key }
+                } else {
+                    Self::None
+                }
+            }
+            crate::config::AuthType::GoogleOauth => {
+                let token = get_token(scopes).await.ok();
+                Self::GoogleOAuth(token)
+            }
+        }
+    }
+}
 
 /// Returns the project ID to be used for quota and billing (sets the `x-goog-user-project` header).
 ///
@@ -871,5 +925,42 @@ mod tests {
         let _config_guard = EnvVarGuard::remove("GOOGLE_WORKSPACE_CLI_CONFIG_DIR");
 
         assert_eq!(get_quota_project(), Some("my-project-123".to_string()));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_provider_auth_resolve_bearer() {
+        let _env_guard = EnvVarGuard::set("TEST_BEARER_TOKEN", "bearer_token_xyz");
+        let cfg = ServiceConfig {
+            auth: crate::config::AuthType::Bearer,
+            bearer_token: Some("$TEST_BEARER_TOKEN".to_string()),
+            is_google: false,
+            ..Default::default()
+        };
+
+        let auth = ProviderAuth::resolve(Some(&cfg), &[]).await;
+        assert_eq!(auth, ProviderAuth::Bearer("bearer_token_xyz".to_string()));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_provider_auth_resolve_api_key() {
+        let _env_guard = EnvVarGuard::set("TEST_API_KEY", "key_12345");
+        let cfg = ServiceConfig {
+            auth: crate::config::AuthType::ApiKey,
+            api_key: Some("$TEST_API_KEY".to_string()),
+            header_name: Some("X-Custom-Key".to_string()),
+            is_google: false,
+            ..Default::default()
+        };
+
+        let auth = ProviderAuth::resolve(Some(&cfg), &[]).await;
+        assert_eq!(
+            auth,
+            ProviderAuth::ApiKey {
+                name: "X-Custom-Key".to_string(),
+                key: "key_12345".to_string()
+            }
+        );
     }
 }

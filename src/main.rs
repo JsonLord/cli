@@ -23,6 +23,8 @@ mod auth;
 pub(crate) mod auth_commands;
 mod client;
 mod commands;
+pub(crate) mod config;
+pub(crate) mod openapi;
 pub(crate) mod credential_store;
 mod discovery;
 mod error;
@@ -256,27 +258,15 @@ async fn run() -> Result<(), GwsError> {
     // Build pagination config from flags
     let pagination = parse_pagination_config(matched_args);
 
+    let registry = config::RegistryConfig::load();
+    let service_config = registry.services.get(&doc.name);
+
     // Select the best scope for the method. Discovery Documents list scopes as
     // alternatives (any one grants access). We pick the first (broadest) scope
     // to avoid restrictive scopes like gmail.metadata that block query parameters.
     let scopes: Vec<&str> = select_scope(&method.scopes).into_iter().collect();
 
-    // Authenticate: try OAuth, fail with error if credentials exist but are broken
-    let (token, auth_method) = match auth::get_token(&scopes).await {
-        Ok(t) => (Some(t), executor::AuthMethod::OAuth),
-        Err(e) => {
-            // If credentials were found but failed (e.g. decryption error, invalid token),
-            // propagate the error instead of silently falling back to unauthenticated.
-            // Only fall back to None if no credentials exist at all.
-            let err_msg = format!("{e:#}");
-            // NB: matches the bail!() message in auth::load_credentials_inner
-            if err_msg.starts_with("No credentials found") {
-                (None, executor::AuthMethod::None)
-            } else {
-                return Err(GwsError::Auth(format!("Authentication failed: {err_msg}")));
-            }
-        }
-    };
+    let provider_auth = auth::ProviderAuth::resolve(service_config, &scopes).await;
 
     // Execute
     executor::execute_method(
@@ -284,8 +274,8 @@ async fn run() -> Result<(), GwsError> {
         method,
         params_json,
         body_json,
-        token.as_deref(),
-        auth_method,
+        provider_auth,
+        service_config,
         output_path,
         upload,
         dry_run,

@@ -128,17 +128,34 @@ pub const SERVICES: &[ServiceEntry] = &[
     },
 ];
 
-/// Resolves a service alias to (api_name, version).
+use crate::config::RegistryConfig;
+
+/// Resolves a service alias or configured service name to (api_name, version).
 pub fn resolve_service(name: &str) -> Result<(String, String), GwsError> {
+    // 1. Check built-in Google services
     for entry in SERVICES {
         if entry.aliases.contains(&name) {
             return Ok((entry.api_name.to_string(), entry.version.to_string()));
         }
     }
-    let all_names: Vec<&str> = SERVICES
+
+    // 2. Check dynamic service registry configuration
+    let registry = RegistryConfig::load();
+    if let Some(svc) = registry.services.get(name) {
+        let version = svc.version.clone().unwrap_or_else(|| "v1".to_string());
+        return Ok((name.to_string(), version));
+    }
+
+    let mut all_names: Vec<String> = SERVICES
         .iter()
-        .flat_map(|e| e.aliases.iter().copied())
+        .flat_map(|e| e.aliases.iter().map(|s| s.to_string()))
         .collect();
+    for key in registry.services.keys() {
+        if !all_names.contains(key) {
+            all_names.push(key.clone());
+        }
+    }
+
     Err(GwsError::Validation(format!(
         "Unknown service '{}'. Known services: {}. Use '<api>:<version>' syntax for unlisted APIs.",
         name,

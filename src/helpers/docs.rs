@@ -70,11 +70,7 @@ TIPS:
                 let (params_str, body_str, scopes) = build_write_request(matches, doc)?;
 
                 let scope_strs: Vec<&str> = scopes.iter().map(|s| s.as_str()).collect();
-                let (token, auth_method) = match auth::get_token(&scope_strs).await {
-                    Ok(t) => (Some(t), executor::AuthMethod::OAuth),
-                    Err(_) if matches.get_flag("dry-run") => (None, executor::AuthMethod::None),
-                    Err(e) => return Err(GwsError::Auth(format!("Docs auth failed: {e}"))),
-                };
+                let provider_auth = auth::ProviderAuth::resolve(None, &scope_strs).await;
 
                 // Method: documents.batchUpdate
                 let documents_res = doc.resources.get("documents").ok_or_else(|| {
@@ -96,8 +92,8 @@ TIPS:
                     batch_update_method,
                     Some(&params_str),
                     Some(&body_str),
-                    token.as_deref(),
-                    auth_method,
+                    provider_auth,
+                    None,
                     None,
                     None,
                     matches.get_flag("dry-run"),
