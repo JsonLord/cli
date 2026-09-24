@@ -208,18 +208,16 @@ pub async fn fetch_discovery_document(
                 }
             }
 
-            // 2. Built-in default spec fallback for cowork service when remote endpoint unavailable
-            if service == "cowork" {
-                if let Ok(doc) = crate::openapi::convert_openapi_to_rest_description(
-                    service,
-                    crate::openapi::DEFAULT_COWORK_OPENAPI_SPEC,
-                    service_config.base_url.as_deref(),
-                ) {
-                    return Ok(doc);
-                }
-            }
-
-            // 3. Schema URL or Discovery check
+            // 2. Schema URL — the live remote spec. Tried BEFORE the embedded
+            // fallback below: a self-hosted service's schema can (and for
+            // "cowork" specifically, does) change after this binary was
+            // built, so a reachable live schema must always win over a
+            // bundled default. Previously this branch ran after the
+            // embedded-default branch, which always "succeeded" (it's a
+            // hardcoded, always-parseable constant) and returned first —
+            // meaning the live schema_url was never actually fetched for
+            // "cowork". See the fixture/adapter compatibility notes in
+            // tests/fixtures/cowork_openapi.json's consuming project.
             let client = crate::client::build_client()?;
             if let Some(schema_url) = &service_config.schema_url {
                 if let Ok(resp) = client.get(schema_url).send().await {
@@ -238,7 +236,7 @@ pub async fn fetch_discovery_document(
                 }
             }
 
-            // 4. Well-known fallback check (/.well-known/cws.json)
+            // 3. Well-known fallback check (/.well-known/cws.json)
             if let Some(base_url) = &service_config.base_url {
                 let well_known_url = format!("{}/.well-known/cws.json", base_url.trim_end_matches('/'));
                 if let Ok(resp) = client.get(&well_known_url).send().await {
@@ -248,6 +246,21 @@ pub async fn fetch_discovery_document(
                             return Ok(doc);
                         }
                     }
+                }
+            }
+
+            // 4. Built-in default spec fallback for the cowork service —
+            // only reached once the live schema_url and well-known checks
+            // above have both failed (unreachable host, non-2xx, or an
+            // unparseable body), so a deployed Cowork instance's real
+            // schema always takes precedence when it's actually up.
+            if service == "cowork" {
+                if let Ok(doc) = crate::openapi::convert_openapi_to_rest_description(
+                    service,
+                    crate::openapi::DEFAULT_COWORK_OPENAPI_SPEC,
+                    service_config.base_url.as_deref(),
+                ) {
+                    return Ok(doc);
                 }
             }
         }

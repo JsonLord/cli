@@ -124,253 +124,535 @@ pub struct OpenApiSchema {
 }
 
 pub const DEFAULT_COWORK_OPENAPI_SPEC: &str = r##"{
-  "openapi": "3.0.3",
+  "openapi": "3.1.0",
   "info": {
     "title": "OpenUI Cowork API",
-    "description": "API for OpenUI Cowork workspace services (files, health, documents, etc.)",
-    "version": "1.0.0"
+    "version": "v1",
+    "description": "Machine-readable API over the OpenUI Cowork deployment: which document/slide apps are mounted, and service liveness. Each app also exposes its own native REST surface directly through this proxy (see each workspace's \"mount\") for capabilities not yet unified here."
   },
   "servers": [
     {
-      "url": "https://leon4gr45-openui-cowork.hf.space"
+      "url": "/"
     }
   ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/api/v1/health": {
+      "get": {
+        "operationId": "health_check",
+        "summary": "Liveness probe",
+        "description": "Returns service status without touching any backend app. Unauthenticated.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Service is up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/info": {
+      "get": {
+        "operationId": "info_get",
+        "summary": "Deployment metadata and capabilities",
+        "description": "Describes enabled capabilities and mounted workspaces. Requires authentication.",
+        "responses": {
+          "200": {
+            "description": "Deployment info",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Info"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces": {
+      "get": {
+        "operationId": "workspaces_list",
+        "summary": "List workspaces",
+        "description": "Each workspace is one of the apps mounted behind this proxy (Casual Docs, Casual Slides).",
+        "responses": {
+          "200": {
+            "description": "Workspace list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}": {
+      "get": {
+        "operationId": "workspaces_get",
+        "summary": "Get a workspace by ID",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace ID, e.g. \"docs\" or \"slides\"."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workspace"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/service": {
+      "get": {
+        "operationId": "workspaces_service",
+        "summary": "Get integration metadata for a workspace's underlying app",
+        "description": "Factual integration metadata for the app backing this workspace: where its own native API lives, whether it publishes its own OpenAPI schema, and which capabilities have been audited and exposed so far. `openapi` and `capabilities` are empty until that app has been audited in a later pass — this endpoint never reports a capability the app has not actually been confirmed to support.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace ID, e.g. \"docs\" or \"slides\"."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Service integration metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceService"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/documents": {
+      "post": {
+        "operationId": "documents_create",
+        "summary": "Create a document in a workspace",
+        "description": "Currently implemented for the \"docs\" workspace only, backed by Casual Docs' own room creation. A document with a password can only be read back with that same password (see documents_download) — see docs/hf-space-docs-api-audit.md for why writing content is not yet exposed here.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace ID. Only \"docs\" supports this operation today."
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Document created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Document"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiErrorResponse"
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/documents/{document_id}": {
+      "get": {
+        "operationId": "documents_get",
+        "summary": "Get a document's metadata",
+        "description": "Currently implemented for the \"docs\" workspace only.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace ID. Only \"docs\" supports this operation today."
+          },
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Document ID, as returned by documents_create."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Document metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Document"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/documents/{document_id}/content": {
+      "get": {
+        "operationId": "documents_download",
+        "summary": "Download a document's original content",
+        "description": "Returns the document's *original* uploaded content, not its live collaboratively-edited state — Casual Docs has no HTTP endpoint for a room's current content; live edits only exist as CRDT updates over its WebSocket. A document with edits since creation will not reflect them here. Currently implemented for the \"docs\" workspace only. See docs/hf-space-docs-api-audit.md.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace ID. Only \"docs\" supports this operation today."
+          },
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Document ID, as returned by documents_create."
+          },
+          {
+            "name": "password",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required when documents_get reports needs_password: true for this document."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Document content bytes",
+            "content": {
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    }
+  },
   "components": {
     "securitySchemes": {
-      "BearerAuth": {
+      "bearerAuth": {
         "type": "http",
         "scheme": "bearer"
-      },
-      "ApiKeyAuth": {
-        "type": "apiKey",
-        "in": "header",
-        "name": "X-API-Key"
       }
     },
     "schemas": {
-      "HealthResponse": {
+      "HealthStatus": {
         "type": "object",
+        "required": [
+          "status",
+          "service",
+          "api_version"
+        ],
         "properties": {
-          "status": { "type": "string" },
-          "timestamp": { "type": "string" }
+          "status": {
+            "type": "string",
+            "example": "ok"
+          },
+          "service": {
+            "type": "string",
+            "example": "cowork"
+          },
+          "api_version": {
+            "type": "string",
+            "example": "v1"
+          }
         }
       },
-      "FileListResponse": {
+      "Info": {
         "type": "object",
         "properties": {
-          "backend": { "type": "string" },
-          "files": {
+          "service": {
+            "type": "string"
+          },
+          "api_version": {
+            "type": "string"
+          },
+          "capabilities": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/FileItem"
+              "type": "string"
+            }
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Workspace"
             }
           }
         }
       },
-      "FileItem": {
+      "Workspace": {
         "type": "object",
+        "required": [
+          "id",
+          "title",
+          "kind",
+          "mount"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "name": { "type": "string" },
-          "size": { "type": "integer" },
-          "mimeType": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "mount": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
         }
       },
-      "FileUploadResponse": {
+      "WorkspaceList": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Workspace"
+            }
+          },
+          "nextPageToken": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "WorkspaceService": {
+        "type": "object",
+        "required": [
+          "id",
+          "base_path",
+          "capabilities"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "base_path": {
+            "type": "string",
+            "description": "Where the app itself is mounted behind this proxy."
+          },
+          "api_base": {
+            "type": "string",
+            "nullable": true,
+            "description": "Where the app's own native API lives, if known and audited."
+          },
+          "openapi": {
+            "type": "string",
+            "nullable": true,
+            "description": "Path to this app's own OpenAPI schema, once published."
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Audited, exposed capabilities of this app's native API, e.g. \"documents_get\"."
+          }
+        }
+      },
+      "ApiError": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      },
+      "DocumentCreateRequest": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "name": { "type": "string" },
-          "status": { "type": "string" }
+          "password": {
+            "type": "string",
+            "description": "Optional. If set, documents_download requires this same password."
+          }
         }
       },
       "Document": {
         "type": "object",
+        "required": [
+          "id",
+          "needs_password"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "title": { "type": "string" },
-          "content": { "type": "string" }
-        }
-      }
-    }
-  },
-  "paths": {
-    "/health": {
-      "get": {
-        "summary": "Check backend health status",
-        "operationId": "healthcheck",
-        "responses": {
-          "200": {
-            "description": "Health status",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HealthResponse"
-                }
-              }
-            }
+          "id": {
+            "type": "string"
+          },
+          "needs_password": {
+            "type": "boolean"
+          },
+          "has_initial_content": {
+            "type": "boolean",
+            "description": "Whether content has ever been uploaded for this document."
+          },
+          "has_snapshot": {
+            "type": "boolean"
+          },
+          "active_clients": {
+            "type": "integer"
           }
         }
       }
     },
-    "/api/files": {
-      "get": {
-        "summary": "List files stored in memory/backend",
-        "operationId": "files_list",
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid bearer token",
+        "content": {
+          "application/json": {
             "schema": {
-              "type": "integer"
-            },
-            "description": "Max files to return"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List of files",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/FileListResponse"
-                }
-              }
+              "$ref": "#/components/schemas/ApiError"
             }
           }
         }
       },
-      "post": {
-        "summary": "Upload or create file",
-        "operationId": "files_create",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/FileItem"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "File upload response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/FileUploadResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/documents": {
-      "get": {
-        "summary": "List documents in workspace",
-        "operationId": "documents_list",
-        "responses": {
-          "200": {
-            "description": "Document list",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/Document"
-                  }
-                }
-              }
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ApiError"
             }
           }
         }
       },
-      "post": {
-        "summary": "Create new document",
-        "operationId": "documents_create",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/Document"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Created document",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Document"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/documents/{id}": {
-      "get": {
-        "summary": "Get document by ID",
-        "operationId": "documents_get",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
+      "ApiErrorResponse": {
+        "description": "Structured error",
+        "content": {
+          "application/json": {
             "schema": {
-              "type": "string"
-            },
-            "description": "Document ID"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Document details",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Document"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "summary": "Delete document by ID",
-        "operationId": "documents_delete",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "Document ID"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Deletion status",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
+              "$ref": "#/components/schemas/ApiError"
             }
           }
         }
       }
     }
   }
-}"##;
+}
+"##;
 
 /// Converts an OpenAPI spec string (JSON or YAML) into a `RestDescription`.
 pub fn convert_openapi_to_rest_description(
@@ -661,6 +943,14 @@ mod tests {
 
     #[test]
     fn test_convert_openapi_fixture() {
+        // DEFAULT_COWORK_OPENAPI_SPEC is a verified snapshot of the real,
+        // deployed Cowork /openapi.json (audited against a live compiled
+        // `gws`/`cws` binary run against a local Cowork test instance —
+        // see JsonLord/genoffice's cws-compat.test.mjs for the JS-side half
+        // of this compatibility contract). Every operationId is
+        // `resource_method` with a single-word method, since this
+        // function's own split-on-last-underscore logic below silently
+        // absorbs a multi-word method into the resource name otherwise.
         let doc = convert_openapi_to_rest_description(
             "cowork",
             DEFAULT_COWORK_OPENAPI_SPEC,
@@ -671,18 +961,40 @@ mod tests {
         assert_eq!(doc.name, "cowork");
         assert_eq!(doc.root_url, "https://leon4gr45-openui-cowork.hf.space/");
 
-        // Verify no resource collision between files and documents!
-        let files_res = doc.resources.get("files").expect("files resource missing");
-        assert!(files_res.methods.contains_key("list"));
-        assert!(files_res.methods.contains_key("create"));
+        let workspaces_res = doc
+            .resources
+            .get("workspaces")
+            .expect("workspaces resource missing");
+        assert!(workspaces_res.methods.contains_key("list"));
+        assert!(workspaces_res.methods.contains_key("get"));
+        assert!(workspaces_res.methods.contains_key("service"));
+        // Paths are absolute from root (/api/v1/...), NOT relative to
+        // `servers[].url` — this adapter ignores servers[].url whenever a
+        // base_url override is supplied (true for every configured
+        // self-hosted service), so a servers-relative path here would
+        // silently resolve to the wrong URL. Confirmed against a live 404
+        // before this fixture was corrected.
+        assert_eq!(workspaces_res.methods["list"].path, "api/v1/workspaces");
 
-        let docs_res = doc.resources.get("documents").expect("documents resource missing");
-        assert!(docs_res.methods.contains_key("list"));
+        let docs_res = doc
+            .resources
+            .get("documents")
+            .expect("documents resource missing");
+        assert!(docs_res.methods.contains_key("create"));
         assert!(docs_res.methods.contains_key("get"));
-        assert!(docs_res.methods.contains_key("delete"));
+        assert!(docs_res.methods.contains_key("download"));
+        // No write/delete capability — see genoffice's
+        // docs/hf-space-docs-api-audit.md: Docs' own write routes skip the
+        // room-password check their read routes enforce, so Cowork
+        // deliberately does not expose one.
+        assert!(!docs_res.methods.contains_key("update"));
+        assert!(!docs_res.methods.contains_key("delete"));
 
         let health_res = doc.resources.get("health").expect("health resource missing");
-        assert!(health_res.methods.contains_key("healthcheck"));
+        assert!(health_res.methods.contains_key("check"));
+
+        let info_res = doc.resources.get("info").expect("info resource missing");
+        assert!(info_res.methods.contains_key("get"));
     }
 
     #[test]
@@ -707,11 +1019,12 @@ mod tests {
 
         let docs_res = doc.resources.get("documents").unwrap();
         let get_method = docs_res.methods.get("get").unwrap();
-        assert!(get_method.parameters.contains_key("id"));
+        assert!(get_method.parameters.contains_key("workspace_id"));
+        assert!(get_method.parameters.contains_key("document_id"));
         assert_eq!(
-            get_method.parameters["id"].location.as_deref(),
+            get_method.parameters["document_id"].location.as_deref(),
             Some("path")
         );
-        assert!(get_method.parameters["id"].required);
+        assert!(get_method.parameters["document_id"].required);
     }
 }
