@@ -165,11 +165,7 @@ TIPS:
                 let (params_str, body_str, scopes) = build_insert_request(matches, doc)?;
 
                 let scopes_str: Vec<&str> = scopes.iter().map(|s| s.as_str()).collect();
-                let (token, auth_method) = match auth::get_token(&scopes_str).await {
-                    Ok(t) => (Some(t), executor::AuthMethod::OAuth),
-                    Err(_) if matches.get_flag("dry-run") => (None, executor::AuthMethod::None),
-                    Err(e) => return Err(GwsError::Auth(format!("Calendar auth failed: {e}"))),
-                };
+                let provider_auth = auth::ProviderAuth::resolve(None, &scopes_str).await;
 
                 let events_res = doc.resources.get("events").ok_or_else(|| {
                     GwsError::Discovery("Resource 'events' not found".to_string())
@@ -183,8 +179,8 @@ TIPS:
                     insert_method,
                     Some(&params_str),
                     Some(&body_str),
-                    token.as_deref(),
-                    auth_method,
+                    provider_auth,
+                    None,
                     None,
                     None,
                     matches.get_flag("dry-run"),

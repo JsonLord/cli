@@ -183,11 +183,89 @@ pub struct JsonSchemaProperty {
     pub additional_properties: Option<Box<JsonSchemaProperty>>,
 }
 
-/// Fetches and caches a Google Discovery Document.
+use crate::config::{RegistryConfig, SchemaType};
+
+/// Fetches and caches a Discovery Document or OpenAPI spec.
 pub async fn fetch_discovery_document(
     service: &str,
     version: &str,
 ) -> anyhow::Result<RestDescription> {
+    let registry = RegistryConfig::load();
+    if let Some(service_config) = registry.services.get(service) {
+        if !service_config.is_google {
+            // 1. Local schema file
+            if let Some(file_path) = &service_config.schema_file {
+                let content = std::fs::read_to_string(file_path)?;
+                if service_config.schema_type == SchemaType::Openapi {
+                    return crate::openapi::convert_openapi_to_rest_description(
+                        service,
+                        &content,
+                        service_config.base_url.as_deref(),
+                    );
+                } else {
+                    let doc: RestDescription = serde_json::from_str(&content)?;
+                    return Ok(doc);
+                }
+            }
+
+            // 2. Schema URL — the live remote spec. Tried BEFORE the embedded
+            // fallback below: a self-hosted service's schema can (and for
+            // "cowork" specifically, does) change after this binary was
+            // built, so a reachable live schema must always win over a
+            // bundled default. Previously this branch ran after the
+            // embedded-default branch, which always "succeeded" (it's a
+            // hardcoded, always-parseable constant) and returned first —
+            // meaning the live schema_url was never actually fetched for
+            // "cowork". See the fixture/adapter compatibility notes in
+            // tests/fixtures/cowork_openapi.json's consuming project.
+            let client = crate::client::build_client()?;
+            if let Some(schema_url) = &service_config.schema_url {
+                if let Ok(resp) = client.get(schema_url).send().await {
+                    if resp.status().is_success() {
+                        let content = resp.text().await?;
+                        if service_config.schema_type == SchemaType::Openapi {
+                            return crate::openapi::convert_openapi_to_rest_description(
+                                service,
+                                &content,
+                                service_config.base_url.as_deref(),
+                            );
+                        } else if let Ok(doc) = serde_json::from_str::<RestDescription>(&content) {
+                            return Ok(doc);
+                        }
+                    }
+                }
+            }
+
+            // 3. Well-known fallback check (/.well-known/cws.json)
+            if let Some(base_url) = &service_config.base_url {
+                let well_known_url = format!("{}/.well-known/cws.json", base_url.trim_end_matches('/'));
+                if let Ok(resp) = client.get(&well_known_url).send().await {
+                    if resp.status().is_success() {
+                        let content = resp.text().await?;
+                        if let Ok(doc) = serde_json::from_str::<RestDescription>(&content) {
+                            return Ok(doc);
+                        }
+                    }
+                }
+            }
+
+            // 4. Built-in default spec fallback for the cowork service —
+            // only reached once the live schema_url and well-known checks
+            // above have both failed (unreachable host, non-2xx, or an
+            // unparseable body), so a deployed Cowork instance's real
+            // schema always takes precedence when it's actually up.
+            if service == "cowork" {
+                if let Ok(doc) = crate::openapi::convert_openapi_to_rest_description(
+                    service,
+                    crate::openapi::DEFAULT_COWORK_OPENAPI_SPEC,
+                    service_config.base_url.as_deref(),
+                ) {
+                    return Ok(doc);
+                }
+            }
+        }
+    }
+
     // Validate service and version to prevent path traversal in cache filenames
     // and injection in discovery URLs.
     let service =

@@ -96,19 +96,15 @@ TIPS:
                 let body_str = metadata.to_string();
 
                 let scopes: Vec<&str> = create_method.scopes.iter().map(|s| s.as_str()).collect();
-                let (token, auth_method) = match auth::get_token(&scopes).await {
-                    Ok(t) => (Some(t), executor::AuthMethod::OAuth),
-                    Err(_) if matches.get_flag("dry-run") => (None, executor::AuthMethod::None),
-                    Err(e) => return Err(GwsError::Auth(format!("Drive auth failed: {e}"))),
-                };
+                let provider_auth = auth::ProviderAuth::resolve(None, &scopes).await;
 
                 executor::execute_method(
                     doc,
                     create_method,
                     None,
                     Some(&body_str),
-                    token.as_deref(),
-                    auth_method,
+                    provider_auth,
+                    None,
                     None,
                     Some(executor::UploadSource::File {
                         path: file_path,
